@@ -5,7 +5,7 @@ use std::{fmt, str};
 
 use rug::ops::{NegAssign, Pow, PowAssign};
 
-use crate::error::ParseError;
+use crate::error::Error;
 use crate::number::Number;
 use crate::polynomial::Polynomial;
 
@@ -242,7 +242,7 @@ impl fmt::Display for Monomial {
 }
 
 impl str::FromStr for Monomial {
-	type Err = ParseError;
+	type Err = Error;
 
 	fn from_str(s: &str) -> Result<Self, Self::Err> {
 		let (init, degree) = if let Some((init, tail)) = s.split_once("x^") {
@@ -260,7 +260,7 @@ impl str::FromStr for Monomial {
 		};
 
 		if coeff.is_zero() {
-			return Err(ParseError::InvalidNumber(coeff));
+			return Err(Error::InvalidNumber(coeff));
 		}
 
 		Ok(Self::new(coeff, degree))

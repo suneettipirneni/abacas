@@ -7,7 +7,7 @@ use std::{fmt, str};
 use rug::Rational;
 use rug::ops::{DivRounding, DivRoundingAssign, NegAssign, Pow, PowAssign, RemRounding, RemRoundingAssign};
 
-use crate::error::ParseError;
+use crate::error::Error;
 
 /// Represents a specific number. Currently uses [`Rational`] under the hood, however this should not be relied upon.
 #[derive(Clone, Debug, Default, Eq, Hash, Ord, PartialEq, PartialOrd)]
@@ -108,6 +108,16 @@ impl Number {
 	pub fn ratio(self) -> (Self, Self) {
 		let (numer, denom) = self.0.into_numer_denom();
 		(Self(numer.into()), Self(denom.into()))
+	}
+
+	/// Converts this number into an [`f32`].
+	pub fn to_f32(&self) -> f32 {
+		self.0.to_f32()
+	}
+
+	/// Converts this number into an [`f64`].
+	pub fn to_f64(&self) -> f64 {
+		self.0.to_f64()
 	}
 
 	/// Internal method to write this number with specific configuration.
@@ -362,7 +372,7 @@ impl fmt::Display for Number {
 }
 
 impl str::FromStr for Number {
-	type Err = ParseError;
+	type Err = Error;
 
 	fn from_str(s: &str) -> Result<Self, Self::Err> {
 		let full = match s.split_once('.') {
@@ -370,7 +380,7 @@ impl str::FromStr for Number {
 			None => s.into(),
 		};
 
-		full.parse().map(Self).map_err(|_| ParseError::InvalidString(full))
+		full.parse().map(Self).map_err(|_| Error::InvalidString(full))
 	}
 }
 

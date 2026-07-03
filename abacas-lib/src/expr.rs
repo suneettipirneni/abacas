@@ -7,37 +7,10 @@ use std::ops::{Add, Div, Mul, Neg, Sub};
 use itertools::Itertools;
 use rug::ops::Pow;
 
-use crate::context::Context;
-use crate::error::SimplifyError;
+use crate::context::{Context, Symbol};
+use crate::error::{Error, Result};
 use crate::number::Number;
 use crate::polynomial::Polynomial;
-
-/// Represents a symbol like `cos` or `pi`.
-#[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
-pub struct Symbol(String);
-
-impl Symbol {
-	/// Gets the name of the symbol.
-	pub fn name(&self) -> &str {
-		&self.0
-	}
-
-	/// Creates a new symbol with the given name. Symbols must not be empty and contain no whitespace.
-	pub fn new(name: impl Into<String>) -> Option<Self> {
-		let name = name.into();
-		if name.is_empty() || name.chars().any(char::is_whitespace) {
-			None
-		} else {
-			Some(Self(name))
-		}
-	}
-}
-
-impl fmt::Display for Symbol {
-	fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-		write!(f, "{}", self.0)
-	}
-}
 
 /// Represents a general expression.
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]
@@ -99,6 +72,58 @@ impl Expr {
 
 // Operations
 impl Expr {
+	/// Evaluates this expression as an approximate value.
+	pub fn evaluate(self, ctx: &Context) -> Result<f64> {
+		match self {
+			Self::Add(exprs) => exprs.into_iter().map(|expr| expr.evaluate(ctx)).sum(),
+			Self::Fun(name, args) => Self::evaluate_fun(name, args, ctx),
+			Self::Mul(exprs) => exprs.into_iter().map(|expr| expr.evaluate(ctx)).product(),
+			Self::Num(num) => Ok(num.to_f64()),
+			Self::Poly(sym, poly) => Self::evaluate_poly(sym, poly, ctx),
+			Self::Pow(base, exp) => Self::evaluate_pow(*base, *exp, ctx),
+		}
+	}
+
+	/// Evaluates a [`Self::Fun`] expression.
+	fn evaluate_fun(name: Symbol, args: Vec<Expr>, ctx: &Context) -> Result<f64> {
+		// Get the evaluator or return an error
+		let Some(evaluator) = ctx.evaluators.get(&name) else {
+			return Err(Error::UndeclaredValue(name));
+		};
+
+		// Evaluate the inner arguments
+		let args = args.into_iter().map(|arg| arg.evaluate(ctx)).try_collect()?;
+
+		// Execute the evaluator
+		evaluator(args)
+	}
+
+	/// Evaluates a [`Self::Poly`] expression.
+	fn evaluate_poly(sym: Symbol, poly: Polynomial, ctx: &Context) -> Result<f64> {
+		// Get the constant or return an error
+		let Some(constant) = ctx.constants.get(&sym) else {
+			return Err(Error::UndeclaredValue(sym));
+		};
+
+		// Return the summed monomials
+		Ok(poly.evaluate(*constant))
+	}
+
+	/// Evaluates a [`Self::Pow`] expression.
+	fn evaluate_pow(base: Expr, exp: Expr, ctx: &Context) -> Result<f64> {
+		// First evaluate the base and exponent separately
+		let base = base.evaluate(ctx)?;
+		let exp = exp.evaluate(ctx)?;
+
+		// If base is zero and exponent is negative, return zero division error
+		if base == 0.0 && exp < 0.0 {
+			return Err(Error::DivisionByZero);
+		}
+
+		// Return the power of both evaluations
+		Ok(base.pow(exp))
+	}
+
 	/// Returns the inner value if this expression is [`Self::Num`], otherwise returns [`None`].
 	pub fn into_num(self) -> Option<Number> {
 		match self {
@@ -116,7 +141,7 @@ impl Expr {
 	}
 
 	/// Simplifies this expression on a best-effort basis.
-	pub fn simplify(self, ctx: &mut Context) -> Result<Self, SimplifyError> {
+	pub fn simplify(self, ctx: &Context) -> Result<Self> {
 		match self {
 			Self::Add(exprs) => Self::simplify_add(exprs, ctx),
 			Self::Fun(name, args) => Self::simplify_fun(name, args, ctx),
@@ -128,7 +153,7 @@ impl Expr {
 	}
 
 	/// Simplifies a [`Self::Add`] expression.
-	fn simplify_add(mut exprs: Vec<Self>, ctx: &mut Context) -> Result<Self, SimplifyError> {
+	fn simplify_add(mut exprs: Vec<Self>, ctx: &Context) -> Result<Self> {
 		// Simplify all elements individually and flatten inner sums
 		exprs = exprs
 			.into_iter()
@@ -186,16 +211,39 @@ impl Expr {
 	}
 
 	/// Simplifies a [`Self::Fun`] expression.
-	fn simplify_fun(name: Symbol, mut args: Vec<Self>, ctx: &mut Context) -> Result<Self, SimplifyError> {
+	fn simplify_fun(name: Symbol, mut args: Vec<Self>, ctx: &Context) -> Result<Self> {
 		// Simplify the inner arguments
 		args = args.into_iter().map(|arg| Self::simplify(arg, ctx)).try_collect()?;
+
+		// Handle user-defined functions with higher priority
+		if let Some(function) = ctx.functions.get(&name) {
+			// Check that the argument count matches
+			if function.params.len() != args.len() {
+				return Err(Error::ArgumentCount(function.name.clone()));
+			}
+
+			// Create a new temporary context with the arguments
+			let mut temp = ctx.clone();
+
+			for (name, arg) in function.params.iter().zip(args) {
+				temp.variables.insert(name.clone(), arg);
+			}
+
+			// Simplify the body with the added arguments
+			return function.body.clone().simplify(&temp);
+		}
+
+		// If no user-defined function was found, look up a simplifier
+		if let Some(simplifier) = ctx.simplifiers.get(&name) {
+			return simplifier(args);
+		}
 
 		// Return the result as a new function call
 		Ok(Self::Fun(name, args))
 	}
 
 	/// Simplifies a [`Self::Mul`] expression.
-	fn simplify_mul(mut exprs: Vec<Self>, ctx: &mut Context) -> Result<Self, SimplifyError> {
+	fn simplify_mul(mut exprs: Vec<Self>, ctx: &Context) -> Result<Self> {
 		// Simplify all elements individually and flatten inner products
 		exprs = exprs
 			.into_iter()
@@ -258,15 +306,16 @@ impl Expr {
 	}
 
 	/// Simplifies a [`Self::Poly`] expression.
-	fn simplify_poly(sym: Symbol, poly: Polynomial, ctx: &mut Context) -> Result<Self, SimplifyError> {
+	fn simplify_poly(sym: Symbol, poly: Polynomial, ctx: &Context) -> Result<Self> {
 		// If the polynomial is constant, return it as a number
 		if poly.is_constant() {
 			return Ok(Self::Num(poly.split_constant().0));
 		}
 
-		// If the polynomial is a monomial and the monomial is a declared variable, return it as a number
-		if ctx.variables.contains_key(&sym) {
-			return Ok(ctx.variables.get(&sym).unwrap().clone());
+		// If the symbol is a declared variable, insert it into the polynomial
+		if let Some(variable) = ctx.variables.get(&sym) {
+			// Return the simplified sum
+			return poly.into_expr(variable).simplify(ctx);
 		}
 
 		// Return the result as a new polynomial
@@ -274,14 +323,14 @@ impl Expr {
 	}
 
 	/// Simplifies a [`Self::Pow`] expression.
-	fn simplify_pow(mut base: Box<Self>, mut exp: Box<Self>, ctx: &mut Context) -> Result<Self, SimplifyError> {
+	fn simplify_pow(mut base: Box<Self>, mut exp: Box<Self>, ctx: &Context) -> Result<Self> {
 		// First simplify the base and exponent separately
 		*base = base.simplify(ctx)?;
 		*exp = exp.simplify(ctx)?;
 
 		// If base is zero and exponent is negative, return zero division error
 		if base.is_num_and(Number::is_zero) && exp.is_num_and(Number::is_negative) {
-			return Err(SimplifyError::DivisionByZero);
+			return Err(Error::DivisionByZero);
 		}
 
 		// If base is one or exponent is zero, return one

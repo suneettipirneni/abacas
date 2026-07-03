@@ -1,7 +1,7 @@
 use std::iter::Peekable;
 
-use abacas::context::Context;
-use abacas::expr::{Expr, Symbol};
+use abacas::context::{Context, Symbol};
+use abacas::expr::Expr;
 use abacas::monomial::Monomial;
 use abacas::number::Number;
 use rug::ops::Pow;
