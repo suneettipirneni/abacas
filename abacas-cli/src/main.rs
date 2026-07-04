@@ -1,3 +1,5 @@
+#![feature(default_field_values)]
+
 use abacas::VERSION;
 use abacas::context::Context;
 use argh::FromArgs;
@@ -11,10 +13,12 @@ use std::borrow::Cow::{self, Borrowed, Owned};
 use std::fmt::Write;
 use std::process::exit;
 
+use rustyline::completion::Completer;
 use rustyline::error::ReadlineError;
 use rustyline::highlight::{CmdKind, Highlighter};
-use rustyline::validate::MatchingBracketValidator;
-use rustyline::{Completer, Config, Editor, Helper, Hinter, Validator};
+use rustyline::hint::Hinter;
+use rustyline::validate::{MatchingBracketValidator, ValidationContext, ValidationResult, Validator};
+use rustyline::{Config, Editor, Helper, Result as ReadlineResult};
 use syntect::easy::HighlightLines;
 use syntect::highlighting::ThemeSet;
 use syntect::parsing::SyntaxSet;
@@ -23,7 +27,7 @@ use crate::parser::Parser;
 use crate::token::Token;
 
 #[derive(FromArgs)]
-/// Configuation options for abacas. Pass no arguments for REPL
+/// Configuration options for abacas. Pass no arguments for REPL
 struct CasConfig {
 	#[argh(option, short = 'e')]
 	/// mathematical expression to run through the CAS.
@@ -61,11 +65,20 @@ fn main() {
 	}
 }
 
-#[derive(Helper, Completer, Hinter, Validator)]
+#[derive(Default)]
 struct HighlightHelper {
-	#[rustyline(Validator)]
 	validator: MatchingBracketValidator,
-	colored_prompt: String,
+	colored_prompt: String = String::new(),
+}
+
+impl Completer for HighlightHelper {
+	type Candidate = String;
+}
+
+impl Helper for HighlightHelper {}
+
+impl Hinter for HighlightHelper {
+	type Hint = String;
 }
 
 impl Highlighter for HighlightHelper {
@@ -119,15 +132,18 @@ impl Highlighter for HighlightHelper {
 	}
 }
 
+impl Validator for HighlightHelper {
+	fn validate(&self, ctx: &mut ValidationContext) -> ReadlineResult<ValidationResult> {
+		self.validator.validate(ctx)
+	}
+}
+
 fn repl(cfg: CasConfig) {
 	println!("Welcome to abacas v{}\nTo exit, press CTRL+C or CTRL+D", VERSION);
 
 	let config = Config::builder().build();
 
-	let h = HighlightHelper {
-		colored_prompt: "".to_owned(),
-		validator: MatchingBracketValidator::new(),
-	};
+	let h = HighlightHelper::default();
 	let mut rl = Editor::with_config(config).unwrap();
 	rl.set_helper(Some(h));
 
